@@ -3,10 +3,10 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base:process.env.VITE_BASE_URL || '/StudyBuddy',
+  base: process.env.NODE_ENV === 'production' ? '/' : '/StudyBuddy',  // ✅ Always root for Vercel
   server: {
-    host:'0.0.0.0',
-    port:5173,
+    host: '0.0.0.0',
+    port: 5173,
     watch: {
       usePolling: true,
     },
