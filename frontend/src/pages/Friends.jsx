@@ -237,8 +237,10 @@ const Friends = () => {
               }`}>
                 {friends.map((friend) => {
                   const friendId = friend.id || friend._id
-                  const isOnline = onlineFriends.includes(friendId)
-                  const studyStatus = friendsStudyStatus[friendId]
+                  // Normalize IDs to strings for consistent comparison
+                  const normalizedFriendId = String(friendId)
+                  const isOnline = onlineFriends.some(id => String(id) === normalizedFriendId)
+                  const studyStatus = friendsStudyStatus[normalizedFriendId] || friendsStudyStatus[friendId]
                   
                                       return (
                       <div key={friendId} className="p-6">

@@ -33,6 +33,14 @@ export const SocketProvider = ({ children }) => {
       newSocket.on('connect', () => {
         console.log('Connected to server')
         setSocket(newSocket)
+        
+        // Automatically request online friends when connected
+        if (user?.friends && user.friends.length > 0) {
+          const friendIds = user.friends.map(friend => String(friend.id || friend._id)).filter(Boolean)
+          if (friendIds.length > 0) {
+            newSocket.emit('get_online_friends', friendIds)
+          }
+        }
       })
 
       newSocket.on('disconnect', () => {
@@ -40,7 +48,33 @@ export const SocketProvider = ({ children }) => {
       })
 
       newSocket.on('online_friends', (friends) => {
-        setOnlineFriends(friends)
+        // Normalize all IDs to strings for consistent comparison
+        setOnlineFriends(friends.map(id => String(id)))
+      })
+
+      // Handle friend coming online
+      newSocket.on('friend_online', (data) => {
+        const friendId = String(data.userId)
+        setOnlineFriends(prev => {
+          // Normalize existing IDs and check if friend is already in the list
+          const normalizedPrev = prev.map(id => String(id))
+          if (!normalizedPrev.includes(friendId)) {
+            return [...normalizedPrev, friendId]
+          }
+          return normalizedPrev
+        })
+      })
+
+      // Handle friend going offline
+      newSocket.on('friend_offline', (data) => {
+        const friendId = String(data.userId)
+        setOnlineFriends(prev => prev.filter(id => String(id) !== friendId))
+        // Also clear study status when friend goes offline
+        setFriendsStudyStatus(prev => {
+          const updated = { ...prev }
+          delete updated[friendId]
+          return updated
+        })
       })
 
       newSocket.on('friend_started_studying', (data) => {
@@ -54,7 +88,7 @@ export const SocketProvider = ({ children }) => {
         }))
 
         // Show notification
-        const friend = user.friends?.find(f => f.id === data.userId)
+        const friend = user.friends?.find(f => f.id === data.userId || f._id === data.userId)
         if (friend) {
           toast.success(`${friend.username} started studying ${data.subject}!`)
         }
@@ -67,7 +101,7 @@ export const SocketProvider = ({ children }) => {
         }))
 
         // Show notification
-        const friend = user.friends?.find(f => f.id === data.userId)
+        const friend = user.friends?.find(f => f.id === data.userId || f._id === data.userId)
         if (friend) {
           const hours = Math.floor(data.duration / (1000 * 60 * 60))
           const minutes = Math.floor((data.duration % (1000 * 60 * 60)) / (1000 * 60))

@@ -12,6 +12,7 @@ import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import studyRoutes from './routes/study.js';
 import { authenticateSocket } from './middleware/auth.js';
+import User from './models/User.js';
 
 // Validate required environment variables
 if (!process.env.JWT_SECRET) {
@@ -81,67 +82,124 @@ const activeUsers = new Map();
 
 io.use(authenticateSocket);
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   console.log('User connected:', socket.userId);
   
-  // Store active user
-  activeUsers.set(socket.userId, {
-    socketId: socket.id,
-    studySession: null,
-    lastSeen: new Date()
-  });
-
-  // Join user to their room for friend updates
-  socket.join(`user_${socket.userId}`);
-
-  // Handle study session start
-  socket.on('start_study', (data) => {
-    const user = activeUsers.get(socket.userId);
-    if (user) {
-      user.studySession = {
-        startTime: new Date(),
-        subject: data.subject || 'General Study',
-        target: data.target || null
-      };
-      
-      // Notify friends about study session
-      socket.broadcast.to(`friends_${socket.userId}`).emit('friend_started_studying', {
-        userId: socket.userId,
-        startTime: user.studySession.startTime,
-        subject: user.studySession.subject
-      });
+  try {
+    // Fetch user with friends from database
+    const user = await User.findById(socket.userId).select('friends');
+    
+    if (!user) {
+      console.error('User not found:', socket.userId);
+      socket.disconnect();
+      return;
     }
-  });
 
-  // Handle study session stop
-  socket.on('stop_study', () => {
-    const user = activeUsers.get(socket.userId);
-    if (user && user.studySession) {
-      const duration = Date.now() - user.studySession.startTime.getTime();
-      
-      // Save study session to database here
-      
-      user.studySession = null;
-      
-      // Notify friends
-      socket.broadcast.to(`friends_${socket.userId}`).emit('friend_stopped_studying', {
-        userId: socket.userId,
-        duration
+    // Store active user
+    activeUsers.set(socket.userId, {
+      socketId: socket.id,
+      studySession: null,
+      lastSeen: new Date(),
+      friends: user.friends || []
+    });
+
+    // Join user to their personal room
+    socket.join(`user_${socket.userId}`);
+
+    // Join all friends' rooms so we can notify them when this user comes online/offline
+    const friendIds = (user.friends || []).map(friend => friend.toString());
+    const currentUserId = socket.userId.toString();
+    
+    friendIds.forEach(friendId => {
+      socket.join(`user_${friendId}`);
+    });
+
+    // Notify all friends that this user is now online
+    friendIds.forEach(friendId => {
+      io.to(`user_${friendId}`).emit('friend_online', {
+        userId: currentUserId
       });
-    }
-  });
+    });
 
-  // Handle getting online friends
-  socket.on('get_online_friends', async (friendIds) => {
-    const onlineFriends = friendIds.filter(id => activeUsers.has(id));
+    // Send initial online friends list to the connected user
+    const onlineFriends = friendIds.filter(id => {
+      // Check if friend is online (normalize IDs to strings for comparison)
+      return Array.from(activeUsers.keys()).some(key => key.toString() === id);
+    });
     socket.emit('online_friends', onlineFriends);
-  });
 
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.userId);
-    activeUsers.delete(socket.userId);
-  });
+    // Handle study session start
+    socket.on('start_study', (data) => {
+      const activeUser = activeUsers.get(socket.userId);
+      if (activeUser) {
+        activeUser.studySession = {
+          startTime: new Date(),
+          subject: data.subject || 'General Study',
+          target: data.target || null
+        };
+        
+        // Notify all friends about study session
+        friendIds.forEach(friendId => {
+          io.to(`user_${friendId}`).emit('friend_started_studying', {
+            userId: currentUserId,
+            startTime: activeUser.studySession.startTime,
+            subject: activeUser.studySession.subject
+          });
+        });
+      }
+    });
+
+    // Handle study session stop
+    socket.on('stop_study', () => {
+      const activeUser = activeUsers.get(socket.userId);
+      if (activeUser && activeUser.studySession) {
+        const duration = Date.now() - activeUser.studySession.startTime.getTime();
+        
+        activeUser.studySession = null;
+        
+        // Notify all friends
+        friendIds.forEach(friendId => {
+          io.to(`user_${friendId}`).emit('friend_stopped_studying', {
+            userId: currentUserId,
+            duration
+          });
+        });
+      }
+    });
+
+    // Handle getting online friends (for manual refresh)
+    socket.on('get_online_friends', async (friendIdsArray) => {
+      // Use provided friendIds or fallback to user's friends
+      const idsToCheck = friendIdsArray && friendIdsArray.length > 0 
+        ? friendIdsArray.map(id => id.toString())
+        : friendIds;
+      
+      // Normalize IDs to strings for comparison
+      const activeUserIds = Array.from(activeUsers.keys()).map(key => key.toString());
+      const onlineFriends = idsToCheck.filter(id => activeUserIds.includes(id.toString()));
+      socket.emit('online_friends', onlineFriends);
+    });
+
+    // Handle disconnect
+    socket.on('disconnect', () => {
+      console.log('User disconnected:', socket.userId);
+      const currentUserId = socket.userId.toString();
+      
+      // Notify all friends that this user is now offline
+      friendIds.forEach(friendId => {
+        io.to(`user_${friendId}`).emit('friend_offline', {
+          userId: currentUserId
+        });
+      });
+      
+      // Remove from active users
+      activeUsers.delete(socket.userId);
+    });
+
+  } catch (error) {
+    console.error('Error handling socket connection:', error);
+    socket.disconnect();
+  }
 });
 
 const PORT = process.env.PORT || 3001;
